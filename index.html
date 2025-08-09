@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Archery Range — Simple Simulator</title>
+  <style>
+    :root{--bg:#0b1220;--panel:#0f1720;--accent:#f4c542;--muted:#9aa4b2}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial;background:linear-gradient(180deg,#071021 0%, #0f1720 100%);color:#e6eef6}
+    .wrap{display:flex;gap:16px;padding:18px;box-sizing:border-box;height:100%}
+    canvas{background:linear-gradient(#d9f2ff11,#0000);border-radius:8px;box-shadow:0 6px 18px rgba(2,6,23,0.6);flex:1;touch-action:none}
+    .ui{width:320px;background:linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.02));border-radius:10px;padding:14px;box-sizing:border-box}
+    h1{font-size:18px;margin:0 0 8px}
+    .row{display:flex;justify-content:space-between;align-items:center;margin:8px 0}
+    .muted{color:var(--muted);font-size:13px}
+    button{background:#132033;border:1px solid rgba(255,255,255,0.04);color:#e6eef6;padding:8px 10px;border-radius:8px;cursor:pointer}
+    input[type=range]{width:100%}
+    .score{font-size:22px;font-weight:700;color:var(--accent)}
+    .hint{font-size:13px;color:var(--muted);margin-top:8px}
+    footer{font-size:12px;color:var(--muted);margin-top:12px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="1200" height="600"></canvas>
+    <div class="ui">
+      <h1>Archery Range — Simple Simulator</h1>
+      <div class="row"><div>Score</div><div class="score" id="score">0</div></div>
+      <div class="row"><div>Shots</div><div id="shotsLeft">10</div></div>
+      <div class="row"><div>Wind</div><div id="windDisp">0</div></div>
+
+      <div style="margin-top:10px">
+        <label class="muted">Difficulty</label>
+        <input id="difficulty" type="range" min="0" max="2" step="1" value="1">
+        <div class="muted">0 = Easy, 1 = Normal, 2 = Hard</div>
+      </div>
+
+      <div style="margin-top:12px">
+        <button id="resetBtn">Reset Game</button>
+        <button id="newRound" style="margin-left:8px">New Round</button>
+      </div>
+
+      <div class="hint">Controls: <strong>Click & drag</strong> from the archer to set angle & power, release to shoot. Press <strong>R</strong> to reset arrow. </div>
+      <div class="hint">Aim preview shows the trajectory. Points: 10 (bull) down to 1 (outer rings).</div>
+      <footer>Made with JavaScript + Canvas — ask to add features (winds, AI, levels).</footer>
+    </div>
+  </div>
+
+  <script>
+  // Robust Archery Simulator — added fallbacks and diagnostics
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  let W = canvas.width, H = canvas.height;
+
+  // Game state
+  const target = { x: W - 220, y: H/2, radius: 120 };
+  const archer = { x: 160, y: H - 120 };
+  let arrow = null; // {x,y,vx,vy,angle,launched}
+  let preview = [];
+  let dragging = false;
+  let activePointerId = null;
+  let lastPointerPos = null;
+  let score = 0;
+  let shots = 10;
+  let difficulty = 1; // 0,1,2
+  let wind = 0;
+  const gravity = 0.45;
+
+  // UI refs
+  const scoreElem = document.getElementById('score');
+  const shotsElem = document.getElementById('shotsLeft');
+  const windElem = document.getElementById('windDisp');
+  const diffInput = document.getElementById('difficulty');
+
+  function resetGame(){ score = 0; shots = 10; newArrow(); randomizeWind(); updateUI(); }
+  function newArrow(){ arrow = { x: archer.x, y: archer.y, vx:0, vy:0, angle:0, launched:false, traveled:0 }; preview = []; }
+  function updateUI(){ scoreElem.textContent = score; shotsElem.textContent = shots; windElem.textContent = wind.toFixed(2); }
+
+  function randomizeWind(){ const maxWind = [0.12, 0.28, 0.52][difficulty]; wind = (Math.random()*2 -1) * maxWind; }
+
+  // Utilities
+  function getCanvasPos(clientX, clientY){ const r = canvas.getBoundingClientRect(); return { x: clientX - r.left, y: clientY - r.top }; }
+  function startDrag(clientX, clientY, pointerId){ if(!arrow) newArrow(); const p = getCanvasPos(clientX, clientY); const dx = p.x - archer.x; const dy = p.y - archer.y; if(Math.hypot(dx,dy) < 110 && !arrow.launched && shots>0){ dragging = true; activePointerId = pointerId !== undefined ? pointerId : 'mouse'; lastPointerPos = p; // set initial preview
+      // small visual feedback
+      computeAimFrom(p.x, p.y);
+      console.debug('drag start', p);
+      return true; } return false; }
+  function moveDrag(clientX, clientY){ if(!dragging) return; const p = getCanvasPos(clientX, clientY); lastPointerPos = p; computeAimFrom(p.x, p.y); }
+  function endDrag(clientX, clientY, pointerId){ if(!dragging) return; // allow any pointer to end
+      dragging = false; activePointerId = null; lastPointerPos = null; if(shots>0 && !arrow.launched){ arrow.launched = true; shots -= 1; updateUI(); console.debug('launched', arrow.vx, arrow.vy); } }
+
+  function computeAimFrom(mx, my){ // sets arrow.vx/vy/angle and preview
+    const dx = mx - archer.x; const dy = archer.y - my; // invert y for angle
+    const angle = Math.atan2(dy, dx);
+    const rawDist = Math.hypot(mx-archer.x, my-archer.y);
+    const power = Math.min(40, Math.max(6, rawDist / 6));
+    arrow.angle = angle;
+    arrow.vx = Math.cos(angle)*power;
+    arrow.vy = -Math.sin(angle)*power;
+    computePreview(arrow.x, arrow.y, arrow.vx, arrow.vy);
+  }
+
+  // Pointer events
+  canvas.addEventListener('pointerdown', (e)=>{ if(startDrag(e.clientX, e.clientY, e.pointerId)){ try{ canvas.setPointerCapture(e.pointerId); }catch(err){} } });
+  canvas.addEventListener('pointermove', (e)=>{ if(activePointerId !== null && activePointerId !== e.pointerId) return; moveDrag(e.clientX, e.clientY); });
+  canvas.addEventListener('pointerup', (e)=>{ if(activePointerId !== null && activePointerId !== e.pointerId){ /*ignore*/ } endDrag(e.clientX, e.clientY, e.pointerId); try{ canvas.releasePointerCapture(e.pointerId); }catch(err){} });
+  canvas.addEventListener('pointercancel', (e)=>{ endDrag(e.clientX, e.clientY, e.pointerId); });
+
+  // Mouse fallback for browsers without pointer events
+  canvas.addEventListener('mousedown', (e)=>{ if(!window.PointerEvent) startDrag(e.clientX, e.clientY, 'mouse'); });
+  window.addEventListener('mousemove', (e)=>{ if(!window.PointerEvent) moveDrag(e.clientX, e.clientY); });
+  window.addEventListener('mouseup', (e)=>{ if(!window.PointerEvent) endDrag(e.clientX, e.clientY, 'mouse'); });
+
+  // touch fallback (if pointer events not supported)
+  canvas.addEventListener('touchstart', (e)=>{ if(window.PointerEvent) return; const t = e.changedTouches[0]; startDrag(t.clientX, t.clientY, t.identifier); e.preventDefault(); }, {passive:false});
+  canvas.addEventListener('touchmove', (e)=>{ if(window.PointerEvent) return; const t = e.changedTouches[0]; moveDrag(t.clientX, t.clientY); e.preventDefault(); }, {passive:false});
+  canvas.addEventListener('touchend', (e)=>{ if(window.PointerEvent) return; const t = e.changedTouches[0]; endDrag(t.clientX, t.clientY, t.identifier); e.preventDefault(); }, {passive:false});
+
+  // keyboard
+  window.addEventListener('keydown',(e)=>{ if(e.key === 'r' || e.key === 'R'){ newArrow(); updateUI(); } });
+
+  diffInput.addEventListener('input',(e)=>{ difficulty = parseInt(e.target.value); randomizeWind(); updateUI(); });
+  document.getElementById('resetBtn').addEventListener('click', resetGame);
+  document.getElementById('newRound').addEventListener('click', ()=>{ shots = 10; score = 0; newArrow(); randomizeWind(); updateUI(); });
+
+  function computePreview(px,py,vx,vy){ preview = []; let simX=px, simY=py, svx=vx, svy=vy; for(let i=0;i<300;i++){ svx += wind; svy += gravity; simX += svx; simY += svy; preview.push({x:simX,y:simY}); if(simY > H || simX > W || simX < 0) break; } }
+
+  function distanceToTarget(x,y){ return Math.hypot(x-target.x, y-target.y); }
+
+  function scoreForHit(dist){ const r = target.radius; const step = r/5; if(dist < step*0.2) return 12; if(dist <= step) return 10; if(dist <= step*2) return 8; if(dist <= step*3) return 6; if(dist <= step*4) return 4; if(dist <= step*5) return 2; if(dist <= target.radius + 24) return 1; return 0; }
+
+  function update(){ if(arrow && arrow.launched){ arrow.vx += wind; arrow.vy += gravity; arrow.x += arrow.vx; arrow.y += arrow.vy; arrow.traveled += Math.hypot(arrow.vx,arrow.vy); arrow.angle = Math.atan2(-arrow.vy, arrow.vx);
+      const dist = distanceToTarget(arrow.x, arrow.y);
+      if(dist < target.radius + 10){ const pts = scoreForHit(dist); score += pts; arrow.launched = false; const dir = Math.atan2(arrow.y - target.y, arrow.x - target.x); arrow.x = target.x + Math.cos(dir)*(dist); arrow.y = target.y + Math.sin(dir)*(dist); setTimeout(()=>{ newArrow(); updateUI(); }, 700); }
+      if(arrow.y > H + 60 || arrow.x > W + 200 || arrow.x < -200){ arrow.launched = false; setTimeout(()=>{ newArrow(); updateUI(); }, 600); } }
+    if(Math.random() < 0.001) randomizeWind(); }
+
+  function drawTarget(){ const rings = 6; for(let i=rings;i>0;i--){ const t = i / rings; const r = target.radius * t; let col; if(i===1) col = '#fff'; else if(i===2) col = '#f4c542'; else if(i===3) col = '#e66b4b'; else if(i===4) col = '#c73a3a'; else col = '#7a2b2b'; ctx.beginPath(); ctx.arc(target.x, target.y, r, 0, Math.PI*2); ctx.fillStyle = col; ctx.fill(); } ctx.beginPath(); ctx.arc(target.x, target.y, target.radius,0,Math.PI*2); ctx.lineWidth=2; ctx.strokeStyle='rgba(255,255,255,0.08)'; ctx.stroke(); }
+
+  function drawArcher(){ ctx.save(); ctx.translate(archer.x, archer.y); ctx.beginPath(); ctx.moveTo(-18,0); ctx.lineTo(-18,40); ctx.moveTo(18,0); ctx.lineTo(18,40); ctx.lineWidth=6; ctx.strokeStyle='#2b3140'; ctx.stroke(); ctx.beginPath(); ctx.arc(0,-8,24,0,Math.PI*2); ctx.fillStyle='#0f99ff22'; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='#cfe9ff22'; ctx.stroke(); ctx.beginPath(); ctx.arc(28,-10,36,Math.PI*1.35,Math.PI*0.35,true); ctx.lineWidth=4; ctx.strokeStyle='#c76b2b'; ctx.stroke(); ctx.beginPath(); ctx.moveTo(8,-46); ctx.lineTo(8,30); ctx.lineWidth=1.8; ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.stroke(); ctx.restore(); }
+
+  function drawArrow(a){ if(!a) return; ctx.save(); ctx.translate(a.x, a.y); ctx.rotate(a.angle); ctx.beginPath(); ctx.rect(-20,-2,40,4); ctx.fillStyle='#6b4b2b'; ctx.fill(); ctx.beginPath(); ctx.moveTo(-18,-2); ctx.lineTo(-26,-8); ctx.lineTo(-18,4); ctx.closePath(); ctx.fillStyle='#ff5b77'; ctx.fill(); ctx.beginPath(); ctx.moveTo(20,0); ctx.lineTo(26,-6); ctx.lineTo(26,6); ctx.closePath(); ctx.fillStyle='#dcdcdc'; ctx.fill(); ctx.restore(); }
+
+  function drawPreview(){ if(!preview || preview.length===0) return; ctx.beginPath(); for(let i=0;i<preview.length;i+=6){ const p = preview[i]; ctx.moveTo(p.x,p.y); ctx.arc(p.x,p.y,2,0,Math.PI*2); } ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.fill(); }
+
+  function render(){ ctx.clearRect(0,0,W,H); ctx.fillStyle = '#0b1220'; ctx.fillRect(0, H-80, W, 80); drawTarget(); ctx.fillStyle='rgba(255,255,255,0.02)'; ctx.fillRect(8,8,220,88); drawPreview(); drawArrow(arrow); drawArcher(); ctx.fillStyle='#ffffffbb'; ctx.font='18px system-ui'; ctx.fillText('Score: '+score, 18, 28); ctx.fillText('Shots: '+shots, 18, 52); ctx.fillText('Wind: '+wind.toFixed(2), 18, 76);
+    if(dragging && lastPointerPos){ // visual aim indicator
+      ctx.beginPath(); ctx.moveTo(archer.x, archer.y); ctx.lineTo(lastPointerPos.x, lastPointerPos.y); ctx.lineWidth=2; ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.stroke(); ctx.beginPath(); ctx.arc(lastPointerPos.x, lastPointerPos.y, 6,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fill(); }
+    if(!dragging && !arrow.launched){ ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.font='12px system-ui'; ctx.fillText('Drag from the archer (around x:'+archer.x+', y:'+archer.y+')', 18, 100); }
+  }
+
+  function loop(){ update(); render(); requestAnimationFrame(loop); }
+
+  window.addEventListener('resize', ()=>{});
+
+  // start
+  newArrow(); randomizeWind(); updateUI(); loop();
+  </script>
+</body>
+</html>
